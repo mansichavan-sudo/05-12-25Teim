@@ -6574,3 +6574,10 @@ def send_followup_reminders(request):
         )
 
     return HttpResponse("Follow-up reminders sent!")
+
+from django.shortcuts import render
+from crmapp.models import SentMessageLog
+
+def sent_logs_view(request):
+    logs = SentMessageLog.objects.select_related("customer").order_by("-created_at")
+    return render(request, "crmapp/sent_message_logs.html", {"logs": logs})

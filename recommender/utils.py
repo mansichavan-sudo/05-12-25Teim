@@ -8,8 +8,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.decomposition import TruncatedSVD
 from .models import Item, Rating, SavedModel
+from crmapp.models import SentMessageLog
 
-from .models import SentMessageLog
 import requests
 
 

@@ -99,10 +99,37 @@
         <label class="form-label fw-bold">Message Body</label>
         <textarea id="messagePreview" class="form-control"></textarea>
 
-        <button class="btn btn-success mt-3">Send to Customer</button>
+        <button class="btn btn-success mt-3" onclick="openSendModal()">Send to Customer</button>
 
     </div>
 </div>
+
+<!-- SEND CONFIRMATION MODAL -->
+<div class="modal fade" id="sendConfirmModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+
+      <div class="modal-header">
+        <h5 class="modal-title">Send Message?</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+
+      <div class="modal-body">
+        <p><strong>Customer:</strong> <span id="confirmCustomer"></span></p>
+        <p><strong>Template:</strong> <span id="confirmTemplate"></span></p>
+        <p><strong>Preview:</strong></p>
+        <div class="border p-2 bg-light" style="white-space: pre-wrap;" id="confirmBody"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-success" onclick="confirmSend()">Send</button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
@@ -113,11 +140,22 @@ document.addEventListener("DOMContentLoaded", () => {
     loadCustomers();
 });
 
-/* ----------------------
-   LOAD PRODUCT LIST
------------------------- */
+/* ============================================================
+   TEMPLATE PLACEHOLDER RENDERING
+   ============================================================ */
+{% verbatim %}
+function renderTemplate(text, data) {
+    return text
+        .replace(/{{\s*customer_name\s*}}/gi, data.customer_name || "")
+        .replace(/{{\s*product\s*}}/gi, data.product || "")
+        .replace(/{{\s*recommended_product\s*}}/gi, data.recommended_product || "");
+}
+{% endverbatim %}
+
+/* LOAD PRODUCTS */
 async function loadProducts() {
     const dropdown = document.getElementById('product');
+
     try {
         const res = await fetch('/api/products/');
         const data = await res.json();
@@ -132,19 +170,26 @@ async function loadProducts() {
     }
 }
 
-/* ----------------------
-   LOAD CUSTOMER LIST (FIXED)
------------------------- */
+/* LOAD CUSTOMERS */
 async function loadCustomers() {
     const dropdown = document.getElementById('customerDropdown');
+    dropdown.innerHTML = `<option value="">Select Customer</option>`;
+
     try {
         const res = await fetch('/api/customers/');
         const data = await res.json();
 
         data.customers.forEach(c => {
             const opt = document.createElement('option');
-            opt.value = c.customer_id;         // correct PK
-            opt.textContent = c.customer_name; // correct name
+            opt.value = c.customer_id;
+            opt.textContent = c.customer_name;
+
+            let phone = "";
+            if (c.primarycontact && c.primarycontact !== "0") phone = c.primarycontact;
+            else if (c.secondarycontact && c.secondarycontact !== "0") phone = c.secondarycontact;
+            else if (c.phone && c.phone !== "0") phone = c.phone;
+
+            opt.dataset.phone = phone;
             dropdown.appendChild(opt);
         });
 
@@ -153,9 +198,7 @@ async function loadCustomers() {
     }
 }
 
-/* ----------------------
-   GET CONTENT-BASED RECOMMENDATIONS
------------------------- */
+/* CONTENT BASED RECOMMENDATIONS */
 function getRecommendations() {
     const product = document.getElementById('product').value;
     const list = document.getElementById('recommendation-list');
@@ -177,9 +220,7 @@ function getRecommendations() {
         });
 }
 
-/* ----------------------
-   GET PERSONALIZED RECOMMENDATIONS
------------------------- */ 
+/* PERSONALIZED RECOMMENDATIONS */
 function getPersonalized() {
     const customerId = document.getElementById('customerDropdown').value;
     const result = document.getElementById('personalized-result');
@@ -197,38 +238,159 @@ function getPersonalized() {
 
             if (data.recommendations?.length) {
 
+                const recommended =
+                    data.recommendations[0].product ||
+                    data.recommendations[0].name ||
+                    data.recommendations[0].title ||
+                    "";
+
                 result.innerHTML = `
-                    <ul class="list-group">
-                        ${data.recommendations
-                            .map(item => `<li class='list-group-item'>
-                                ${item.product || item.name || item.title || JSON.stringify(item)}
-                            </li>`).join("")}
-                    </ul>`;
+                    <div class="alert alert-info">
+                        <strong>Recommended Product:</strong> ${recommended}
+                    </div>
+                `;
+
+                // Auto-fill template if already loaded
+                const msg = document.getElementById("messagePreview").value;
+                const customerDropdown = document.getElementById("customerDropdown");
+                const customerName = customerDropdown.options[customerDropdown.selectedIndex]?.text;
+                const selectedProduct = document.getElementById("product").value || "";
+
+                document.getElementById("messagePreview").value = renderTemplate(msg, {
+                    customer_name: customerName,
+                    product: selectedProduct,
+                    recommended_product: recommended
+                });
+
             } else {
                 result.innerHTML = "<p class='text-danger'>No recommendations found.</p>";
             }
         });
 }
 
-/* ----------------------
-   MESSAGE TEMPLATE LOGIC
------------------------- */
+/* TEMPLATE SELECTION */
 document.getElementById("messageTemplate").addEventListener("change", function () {
     const selected = this.options[this.selectedIndex];
 
-    const body = selected.getAttribute("data-body");
-    const subject = selected.getAttribute("data-subject");
+    const rawBody = selected.getAttribute("data-body") || "";
+    const subject = selected.getAttribute("data-subject") || "";
     const type = selected.getAttribute("data-type");
 
-    document.getElementById("messagePreview").value = body ?? "";
+    const customerDropdown = document.getElementById("customerDropdown");
+    const customerName = customerDropdown.options[customerDropdown.selectedIndex]?.text || "";
+
+    const selectedProduct = document.getElementById("product").value || "";
+
+    let recommendedProduct = "";
+    const recommendedLi = document.querySelector("#personalized-result .alert-info");
+    if (recommendedLi) {
+        recommendedProduct = recommendedLi.textContent.replace("Recommended Product:", "").trim();
+    }
+
+    const finalBody = renderTemplate(rawBody, {
+        customer_name: customerName,
+        product: selectedProduct,
+        recommended_product: recommendedProduct
+    });
+
+    document.getElementById("messagePreview").value = finalBody;
 
     if (type === "email") {
         document.getElementById("emailSubjectDiv").style.display = "block";
-        document.getElementById("emailSubject").value = subject ?? "";
+        document.getElementById("emailSubject").value = subject;
     } else {
         document.getElementById("emailSubjectDiv").style.display = "none";
     }
 });
+
+/* OPEN SEND MODAL */
+function openSendModal() {
+
+    const customerDropdown = document.getElementById("customerDropdown");
+    const customerId = customerDropdown.value;
+    const customerName = customerDropdown.options[customerDropdown.selectedIndex]?.text;
+
+    const templateDropdown = document.getElementById("messageTemplate");
+    const templateId = templateDropdown.value;
+    const templateName = templateDropdown.options[templateDropdown.selectedIndex]?.text;
+
+    if (!customerId) return alert("Please select a customer.");
+    if (!templateId) return alert("Please select a template.");
+
+    const messageBody = document.getElementById("messagePreview").value;
+    if (!messageBody.trim()) return alert("Message body is empty.");
+
+    const selectedProduct = document.getElementById("product").value || "";
+
+    let recommendedProduct = "";
+    const recommendedLi = document.querySelector("#personalized-result .alert-info");
+    if (recommendedLi) {
+        recommendedProduct = recommendedLi.textContent.replace("Recommended Product:", "").trim();
+    }
+
+    const finalPreview = renderTemplate(messageBody, {
+        customer_name: customerName,
+        product: selectedProduct,
+        recommended_product: recommendedProduct
+    });
+
+    document.getElementById("confirmCustomer").textContent = customerName;
+    document.getElementById("confirmTemplate").textContent = templateName;
+    document.getElementById("confirmBody").textContent = finalPreview;
+
+    document.getElementById("confirmBody").dataset.finalMessage = finalPreview;
+
+    const selectedPhone = customerDropdown.options[customerDropdown.selectedIndex].dataset.phone;
+    if (!selectedPhone) return alert("This customer does not have a valid phone number.");
+
+    document.getElementById("confirmBody").dataset.phone = selectedPhone;
+
+    const modal = new bootstrap.Modal(document.getElementById("sendConfirmModal"));
+    modal.show();
+}
+
+/* SEND FINAL MESSAGE */
+async function confirmSend() {
+
+    const customerId = document.getElementById("customerDropdown").value;
+    const templateId = document.getElementById("messageTemplate").value;
+
+    const confirmBodyElement = document.getElementById("confirmBody");
+
+    const phone = confirmBodyElement.dataset.phone;
+    const finalBody = confirmBodyElement.dataset.finalMessage;
+
+    if (!phone) {
+        alert("Customer phone number missing.");
+        return;
+    }
+
+    const payload = {
+        customer_id: customerId,
+        template_id: templateId,
+        phone: phone,
+        rendered_message: finalBody
+    };
+
+    try {
+        const res = await fetch("/api/send-message/", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+
+        if (data.status === "success") {
+            alert("Message sent successfully!");
+        } else {
+            alert("Failed: " + (data.error || "Unknown error"));
+        }
+
+    } catch (e) {
+        alert("Network error while sending.");
+    }
+}
 
 </script>
 

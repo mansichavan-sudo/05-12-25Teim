@@ -39,6 +39,8 @@ urlpatterns = [
     path("api/ai-calling/", include("ai_calling.api_urls")),
     path('', include('recommender.urls')),
     path('recommendations/', include('recommender.urls')),
+    path("messages/", include("crmapp.urls_message")),
+
 
     
 

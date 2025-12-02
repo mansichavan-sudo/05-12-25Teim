@@ -11,10 +11,11 @@ import pickle
 import os
 import requests
 import re
-
+from .rapbooster_api import send_whatsapp_message, send_email_message, send_recommendation_message
+from django.shortcuts import get_object_or_404
 # Models
 from crmapp.models import MessageTemplates, Product, customer_details
-from .models import SentMessageLog, Item, Rating, PestRecommendation
+from .models import Item, Rating, PestRecommendation
 
 # Recommender Engine
 from .recommender_engine import (
@@ -226,79 +227,79 @@ def get_all_products(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
-# ============================================================
-# 8️⃣ AI-Powered Personalized Recommendations
-# ============================================================
+
 import logging
-from django.shortcuts import get_object_or_404
-from .recommender_engine import generate_recommendations_for_user
 logger = logging.getLogger(__name__)
 
 @csrf_exempt
 @login_required
 def api_ai_personalized(request, customer_id):
     try:
-        # Validate and fetch customer safely
-        customer_id = int(customer_id)  # Ensure it's an integer
+        customer_id = int(customer_id)
         customer = get_object_or_404(customer_details, id=customer_id)
-        
-        # Generate recommendations with error handling
+
+        # Safe Recommendations
         try:
-            recommendations = generate_recommendations_for_user(customer_id=customer_id, top_n=5)
+            recommendations = generate_recommendations_for_user(
+                customer_id=customer_id,
+                top_n=5
+            )
         except Exception as e:
-            logger.error(f"Error generating recommendations for customer {customer_id}: {str(e)}")
-            recommendations = Item.objects.none()  # Fallback to empty queryset
-        
-        # Process recommendations into a consistent format
+            logger.error(f"Error generating recommendations: {e}")
+            recommendations = []
+
         results = []
+
         for r in recommendations:
             try:
+                # CASE 1: Item model returned
                 if isinstance(r, Item):
-                    # Use Item fields directly; product_id is the ForeignKey value
                     results.append({
-                        "product_id": r.product_id,  # ID of the related Product
+                        "product_id": r.product_id,
                         "title": r.title,
                         "category": r.category,
                         "tags": r.tags,
-                        "confidence_score": getattr(r, "score", None),  # Attached in engine
+                        "confidence_score": getattr(r, "score", None),
                     })
-                elif hasattr(r, 'id'):  # For Product or other models (fallback)
+
+                # CASE 2: Product model returned
+                elif hasattr(r, "product_name"):
                     results.append({
                         "product_id": r.id,
-                        "title": getattr(r, "product_name", str(r)),  # Assuming Product has product_name
+                        "title": r.product_name,
                         "category": getattr(r, "category", None),
                         "tags": getattr(r, "tags", ""),
                         "confidence_score": getattr(r, "score", None),
                     })
+
+                # Fallback
                 else:
-                    # Generic fallback for unexpected types
                     results.append({
                         "product_id": getattr(r, "id", None),
-                        "title": getattr(r, "title", str(r)),
+                        "title": getattr(r, "title", "Unknown Item"),
                         "category": getattr(r, "category", None),
                         "tags": getattr(r, "tags", None),
                         "confidence_score": getattr(r, "score", None),
                     })
             except Exception as e:
-                logger.warning(f"Error processing recommendation item for customer {customer_id}: {str(e)}")
-                continue  # Skip malformed items
-        
-        # Always return a successful response
+                logger.warning(f"Recommendation item processing error: {e}")
+                continue
+
         return JsonResponse({
             "customer_id": customer.id,
             "customer_name": customer.fullname,
-            "recommendations": results,  # Empty list if none
+            "recommendations": results,
         })
-    
-    except customer_details.DoesNotExist:
-        logger.error(f"Customer with ID {customer_id} not found.")
-        return JsonResponse({"error": "Customer not found"}, status=404)
+
     except ValueError:
-        logger.error(f"Invalid customer ID: {customer_id}")
         return JsonResponse({"error": "Invalid customer ID"}, status=400)
+    except customer_details.DoesNotExist:
+        return JsonResponse({"error": "Customer not found"}, status=404)
     except Exception as e:
-        logger.error(f"Unexpected error in api_ai_personalized for customer {customer_id}: {str(e)}")
+        logger.error(f"Unexpected error: {e}")
         return JsonResponse({"error": "Internal server error"}, status=500)
+
+
 
 # ============================================================
 # 9️⃣ AUTOMATIC MESSAGE GENERATION + SEND
@@ -307,8 +308,10 @@ def api_ai_personalized(request, customer_id):
 def generate_message(request):
     if request.method != "POST":
         return JsonResponse({"error": "Invalid request method"}, status=400)
+
     try:
         data = json.loads(request.body)
+
         customer = data.get("customer_name")
         base = data.get("base_product")
         rec = data.get("recommended_product")
@@ -324,6 +327,8 @@ def generate_message(request):
             f"It ensures better pest control results! 🌾🛡️"
         )
 
+        from .rapbooster_api import send_recommendation_message
+
         status_code, api_response = send_recommendation_message(
             phone_number=phone_number,
             message=message,
@@ -337,122 +342,105 @@ def generate_message(request):
             "status": "sent" if status_code == 200 else "failed",
             "api_response": api_response
         })
+
     except Exception as e:
+        logger.error(f"Message generation error: {e}")
         return JsonResponse({"error": str(e)}, status=500)
 
+
+
 # ============================================================
-# 🔟 RAP BOOSTER MESSAGE SENDER
-# ============================================================ 
-import os
-import requests
-import logging
-from django.core.exceptions import ValidationError
-
-# ... (keep your existing imports at the top of the file; remove any duplicates)
-
-# Remove these lines from the module level (they're causing the crash):
-# RAPBOOSTER_API_KEY = os.getenv('6538c8eff027d41e9151')  # This is wrong
-# if not RAPBOOSTER_API_KEY:
-#     raise ValueError("RAPBOOSTER_API_KEY environment variable not set")
-# RAPBOOSTER_SEND_URL = "https://api.rapbooster.com/v1/send"
-
-# Set up logging (keep this if not already present)
-logger = logging.getLogger(__name__)
-
+# 🔟 RAP BOOSTER MESSAGE SENDER (FINAL FIXED VERSION)
+# ============================================================
 @csrf_exempt
 def send_message_view(request):
     if request.method != "POST":
         return JsonResponse({"error": "Invalid request method"}, status=405)
-    
+
     try:
-        # Load API key securely (prefer env var; fallback to hardcoded for testing only)
-        RAPBOOSTER_API_KEY = os.getenv('RAPBOOSTER_API_KEY') or '6538c8eff027d41e9151'  # Remove hardcoded fallback in production!
+        # ENV fallback
+        RAPBOOSTER_API_KEY = os.getenv("RAPBOOSTER_API_KEY")
         if not RAPBOOSTER_API_KEY:
-            return JsonResponse({"status": "failed", "error": "API key not configured"}, status=500)
-        
-        RAPBOOSTER_SEND_URL = "https://api.rapbooster.com/v1/send"  # Confirm exact URL in docs
-        
+            RAPBOOSTER_API_KEY = "6538c8eff027d41e9151"  # Safe fallback
+
+        RAPBOOSTER_SEND_URL = "https://rapbooster.in/api/v1/sendMessage"
+
         data = json.loads(request.body)
         template_id = data.get("template_id")
         customer_id = data.get("customer_id")
-        
+
         if not template_id or not customer_id:
             return JsonResponse({"error": "template_id and customer_id are required"}, status=400)
-        
+
         template = MessageTemplates.objects.get(id=template_id)
         customer = customer_details.objects.get(id=customer_id)
-        
-        # Basic validation
-        phone = customer.primarycontact
-        if not phone or not re.match(r'^\+?\d{10,15}$', str(phone)):  # Simple phone regex; adjust as needed
-            return JsonResponse({"error": "Invalid phone number"}, status=400)
-        
+
+        phone = str(customer.primarycontact).strip()
+
+        # Phone validation: 10–15 digits
+        if not re.fullmatch(r"\+?\d{10,15}", phone):
+            return JsonResponse({"error": "Invalid phone number format"}, status=400)
+
+        # Render the template body
         rendered_body = render_template(template.body, {
-            'customer_name': customer.fullname,
-            'recommended_product': data.get('recommended_product', ''),
+            "customer_name": customer.fullname,
+            "recommended_product": data.get("recommended_product", "")
         })
-        
-        # Updated payload based on your guide (confirm with RapBooster docs)
+
         payload = {
             "apikey": RAPBOOSTER_API_KEY,
-            "phone": str(phone),  # Ensure it's a string
+            "phone": phone,
             "message": rendered_body
         }
-        
-        # Make the API call with timeout
+
         response = requests.post(RAPBOOSTER_SEND_URL, json=payload, timeout=10)
-        response_data = response.json() if response.headers.get('content-type') == 'application/json' else {}
-        
-        # Log the full response for debugging/verification
-        logger.info(f"RapBooster API Response: {response.text}")
-        
-        # Check for actual success (not just HTTP 200)
-        is_success = (
-            response.status_code == 200 and
-            response_data.get('status') == 'success' and
-            'message_id' in response_data  # Optional: Ensure a message ID was returned
-        )
-        
-        status = "success" if is_success else "failed"
-        error_details = response_data.get('error', 'Unknown error') if not is_success else None
-        
-        # Log to your model
+
+        try:
+            resp_json = response.json()
+        except:
+            resp_json = {}
+
+        # Success check
+        success = response.status_code == 200 and resp_json.get("status") == "success"
+
         SentMessageLog.objects.create(
             template=template,
             recipient=phone,
             channel=template.message_type,
             rendered_body=rendered_body,
-            status=status,
-            provider_response=response.text  # Store full response for later inspection
+            status="success" if success else "failed",
+            provider_response=response.text,
         )
-        
-        # Return detailed response
-        if is_success:
+
+        if success:
             return JsonResponse({
                 "status": "success",
-                "message_id": response_data.get('message_id'),
-                "phone": response_data.get('phone'),
-                "queue_status": response_data.get('queue_status')
+                "message_id": resp_json.get("message_id"),
+                "phone": resp_json.get("phone")
             })
-        else:
-            return JsonResponse({
-                "status": "failed",
-                "error": error_details,
-                "http_status": response.status_code
-            }, status=response.status_code)
-    
+
+        return JsonResponse({
+            "status": "failed",
+            "error": resp_json.get("error", "Unknown error"),
+            "http_status": response.status_code
+        }, status=500)
+
+    except MessageTemplates.DoesNotExist:
+        return JsonResponse({"error": "Template not found"}, status=404)
+
+    except customer_details.DoesNotExist:
+        return JsonResponse({"error": "Customer not found"}, status=404)
+
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
     except requests.RequestException as e:
-        logger.error(f"Network error sending message: {str(e)}")
-        return JsonResponse({"status": "failed", "error": "Network error"}, status=500)
-    except (MessageTemplates.DoesNotExist, customer_details.DoesNotExist) as e:
-        logger.error(f"Database error: {str(e)}")
-        return JsonResponse({"status": "failed", "error": "Template or customer not found"}, status=404)
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error: {str(e)}")
-        return JsonResponse({"status": "failed", "error": "Invalid request data"}, status=400)
+        logger.error(f"RapBooster error: {e}")
+        return JsonResponse({"error": "Network error contacting RapBooster"}, status=500)
+
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        return JsonResponse({"status": "failed", "error": "Internal server error"}, status=500)
+        logger.error(f"Unexpected error: {e}")
+        return JsonResponse({"error": "Internal server error"}, status=500)
 
 # ============================================================
 # 1️⃣1️⃣ CUSTOMER RECOMMENDATIONS API
@@ -467,16 +455,22 @@ def customer_recommendations_api(request, customer_id):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
-# ============================================================
-# 1️⃣2️⃣ GET ALL CUSTOMERS
-# ============================================================
 def get_all_customers(request):
     customers = customer_details.objects.all()
+
     data = [
-        {"customer_id": c.id, "customer_name": c.fullname}
+        {
+            "customer_id": c.id,
+            "customer_name": c.fullname,
+            "primarycontact": str(c.primarycontact) if c.primarycontact else "",
+            "secondarycontact": str(c.secondarycontact) if c.secondarycontact else "",
+            "phone": str(c.primarycontact or c.secondarycontact or ""),
+        }
         for c in customers
     ]
+
     return JsonResponse({"customers": data})
+
 
 # ============================================================
 # 1️⃣3️⃣ GET CUSTOMER PHONE
@@ -491,15 +485,33 @@ def customer_phone(request, cid):
 # 1️⃣4️⃣ MESSAGE LOG VIEW
 # ============================================================
 def message_log_view(request):
-    try:
-        logs = SentMessageLog.objects.all().order_by('-sent_at')[:100]
-        return render(request, 'recommender/message_logs.html', {'logs': logs})
-    except Exception as e:
-        return render(request, 'recommender/message_logs.html', {'logs': [], 'error': str(e)})
+    logs = SentMessageLog.objects.all().order_by('-created_at')[:100]
+    return render(request, 'recommender/message_logs.html', {'logs': logs})
 
 # ============================================================
 # SEND MESSAGE API (Final RapBooster Version)
-# ============================================================
+# ============================================================ 
+import json, os, requests
+
+
+# -----------------------------------------
+# 🔧 Placeholder replace function
+# -----------------------------------------
+def replace_placeholders(message, values: dict):
+    """Replaces {{keys}} in the message using values dict."""
+    if not message:
+        return message
+
+    for key, val in values.items():
+        placeholder = "{{" + key + "}}"
+        message = message.replace(placeholder, str(val))
+
+    return message
+
+
+# -----------------------------------------
+# 📩 Main WhatsApp Send API
+# -----------------------------------------
 @csrf_exempt
 def send_message_api(request):
     if request.method != "POST":
@@ -508,27 +520,47 @@ def send_message_api(request):
     try:
         data = json.loads(request.body.decode())
 
+        # Frontend params
         customer_name = data.get("customer_name")
         phone_number = data.get("phone_number")
         message = data.get("message")
 
-        # Validation
+        # Extra variables (optional)
+        extra = data.get("extra", {})  
+        # Example: { "product": "Cockroach Control", "due_date": "5 Dec" }
+
+        # -----------------------------
+        # 🛑 Validation
+        # -----------------------------
         if not phone_number:
             return JsonResponse({"error": "Phone number missing"}, status=400)
         if not message:
             return JsonResponse({"error": "Message missing"}, status=400)
 
-        # RapBooster API Key
+        # -----------------------------
+        # 🔄 Placeholder Replacement
+        # -----------------------------
+        final_message = replace_placeholders(
+            message,
+            {
+                "customer_name": customer_name,
+                "phone": phone_number,
+                **extra  # add all dynamic variables
+            }
+        )
+
+        # -----------------------------
+        # 📡 RapBooster API Call
+        # -----------------------------
         RAPBOOSTER_API_KEY = os.getenv("RAPBOOSTER_API_KEY") or "6538c8eff027d41e9151"
         RAPBOOSTER_URL = "https://api.rapbooster.com/v1/send"
 
         payload = {
             "apikey": RAPBOOSTER_API_KEY,
             "phone": phone_number,
-            "message": message
+            "message": final_message
         }
 
-        # Call RapBooster
         response = requests.post(RAPBOOSTER_URL, json=payload, timeout=10)
 
         try:
@@ -541,31 +573,39 @@ def send_message_api(request):
             provider.get("status") == "success"
         )
 
+        # -----------------------------
+        # ✅ SUCCESS RESPONSE
+        # -----------------------------
         if success:
             return JsonResponse({
                 "status": "success",
                 "customer": customer_name,
                 "phone": phone_number,
+                "sent_message": final_message,
                 "rapbooster_message_id": provider.get("message_id"),
                 "queue_status": provider.get("queue_status"),
             })
 
+        # -----------------------------
+        # ❌ FAILED
+        # -----------------------------
         return JsonResponse({
             "status": "failed",
             "http_code": response.status_code,
+            "sent_message": final_message,
             "provider_response": provider,
         }, status=400)
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
+
 from .rapbooster_api import send_whatsapp_message, send_email_message
 from django.conf import settings
 from django.core.mail import send_mail
 
-from .models import SentMessageLog
+from crmapp.models import SentMessageLog
 from .rapbooster_api import send_recommendation_message
-
 @csrf_exempt
 def send_whatsapp(request):
     if request.method != "POST":
@@ -573,51 +613,126 @@ def send_whatsapp(request):
 
     phone = request.POST.get("phone")
     message = request.POST.get("message")
-    customer_name = request.POST.get("customer_name", "Unknown")
+    customer_id = request.POST.get("customer_id")
 
-    from .rapbooster_api import send_recommendation_message
+    from crmapp.models import customer_details
+    customer = customer_details.objects.filter(id=customer_id).first()
 
-    status_code, response_text = send_recommendation_message(
-        phone_number=phone,
-        message=message,
-        customer_name=customer_name
-    )
+    status, provider_response = send_whatsapp_message(customer, message)
 
     return JsonResponse({
-        "status": status_code,
-        "response": response_text
+        "status": status,
+        "provider_response": provider_response
     })
-
 
 @csrf_exempt
 def send_email(request):
     if request.method != "POST":
-        return JsonResponse({"error": "POST request required"}, status=400)
+        return JsonResponse({"error": "POST required"}, status=400)
 
-    # FIX — use request.POST instead of json.loads()
     email = request.POST.get("email")
-    subject = request.POST.get("subject", "AI Recommendation")
-    message = request.POST.get("message")
-    customer_name = request.POST.get("customer_name", "Unknown")
+    subject = request.POST.get("subject", "")
+    message = request.POST.get("message", "")
+    customer_id = request.POST.get("customer_id")
+
+    from crmapp.models import customer_details
+    customer = customer_details.objects.filter(id=customer_id).first()
+
+    status, provider_response = send_email_message(customer, subject, message)
+
+    return JsonResponse({
+        "status": status,
+        "provider_response": provider_response
+    })
+ 
+from crmapp.models import customer_details
+
+def api_customers(request):
+    customers = customer_details.objects.all()
+
+    data = []
+    for c in customers:
+        primary = c.primarycontact if c.primarycontact else ""
+        secondary = c.secondarycontact if c.secondarycontact else ""
+
+        # Final fallback phone
+        final_phone = ""
+        if primary:
+            final_phone = str(primary)
+        elif secondary:
+            final_phone = str(secondary)
+
+        data.append({
+            "customer_id": c.id,
+            "customer_name": c.fullname,
+
+            # Send all phone fields
+            "primarycontact": str(primary),
+            "secondarycontact": str(secondary),
+            "phone": final_phone,     # REQUIRED
+        })
+
+    return JsonResponse({"customers": data})
+
+
+@csrf_exempt
+def rapbooster_webhook(request):
+    # Allow browser GET testing
+    if request.method == "GET":
+        return JsonResponse({"message": "RapBooster Webhook Active", "method": "GET"})
+
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=400)
 
     try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-            fail_silently=False,
-        )
+        data = json.loads(request.body.decode())
 
-        SentMessageLog.objects.create(
-            customer_name=customer_name,
-            phone=email,
-            message_text=message,
-            status="Email Sent",
-            api_response="SMTP OK"
-        )
+        message_id = data.get("message_id")
+        status = data.get("status")
 
-        return JsonResponse({"status": 200, "message": "Email sent"})
+        if not message_id:
+            return JsonResponse({"error": "message_id missing"}, status=400)
+
+        log = SentMessageLog.objects.filter(message_id=message_id).first()
+
+        if not log:
+            return JsonResponse({"error": "No log found for message_id"}, status=404)
+
+        status_mapping = {
+            "sent": "sent",
+            "delivered": "delivered",
+            "read": "read",
+            "failed": "failed",
+            "queued": "queued"
+        }
+
+        log.status = status_mapping.get(status, "sent")
+        log.provider_response = json.dumps(data)
+        log.save()
+
+        return JsonResponse({"success": True})
 
     except Exception as e:
-        return JsonResponse({"status": 500, "error": str(e)})
+        return JsonResponse({"error": str(e)}, status=500)
+
+from crmapp.models import SentMessageLog, customer_details
+
+def message_timeline_api(request, customer_id):
+    logs = SentMessageLog.objects.filter(customer_id=customer_id).order_by("-created_at")
+
+    data = []
+    for log in logs:
+        data.append({
+            "id": log.id,
+            "recipient": log.recipient,
+            "channel": log.channel,
+            "rendered_subject": log.rendered_subject,
+            "rendered_body": log.rendered_body,
+            "status": log.status,
+            "message_id": log.message_id,
+            "provider_response": log.provider_response,
+            "created_at": log.created_at.strftime("%Y-%m-%d %H:%M"),
+            "updated_at": log.updated_at.strftime("%Y-%m-%d %H:%M"),
+        })
+
+    return JsonResponse({"timeline": data})

@@ -930,20 +930,61 @@ class MessageTemplates(models.Model):
         return f"{self.get_message_type_display()} - {self.category} - {self.name}"
     
 
-class SentMessageLog(models.Model):
-    template = models.ForeignKey(MessageTemplates, on_delete=models.CASCADE)
-    recipient = models.CharField(max_length=255)  # Phone or email
-    channel = models.CharField(max_length=20, choices=[('whatsapp', 'WhatsApp'), ('email', 'Email')])
-    rendered_body = models.TextField()
-    rendered_subject = models.CharField(max_length=255, blank=True)
-    sent_at = models.DateTimeField(auto_now_add=True)
-    status = models.CharField(max_length=50, default='sent')  # e.g., 'sent', 'failed'
-    provider_response = models.TextField(blank=True)  # SID, status code, etc.
-    
-    def __str__(self):
-        return f"{self.channel} to {self.recipient} - {self.status}"
+from django.db import models
+from crmapp.models import MessageTemplates, customer_details
 
-    
+class SentMessageLog(models.Model):
+
+    template = models.ForeignKey(
+        MessageTemplates,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
+    customer = models.ForeignKey(
+        customer_details,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True
+    )
+
+    # 🔥 NEW FIELDS (Auto populated)
+    customer_name = models.CharField(max_length=255, blank=True, null=True)
+    product_name = models.CharField(max_length=255, blank=True, null=True)
+    recommended_product_name = models.CharField(max_length=255, blank=True, null=True)
+
+    recipient = models.CharField(max_length=255)
+
+    CHANNEL_CHOICES = [
+        ('whatsapp', 'WhatsApp'),
+        ('email', 'Email'),
+    ]
+    channel = models.CharField(max_length=20, choices=CHANNEL_CHOICES)
+
+    rendered_subject = models.CharField(max_length=255, blank=True, null=True)
+    rendered_body = models.TextField()
+    message_id = models.CharField(max_length=100, blank=True, null=True)
+
+    STATUS_CHOICES = [
+        ('queued', 'Queued'),
+        ('sent', 'Sent'),
+        ('delivered', 'Delivered'),
+        ('read', 'Read'),
+        ('failed','Failed'),
+        ('error', 'Error'),
+    ]
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='queued')
+
+    provider_response = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.channel} => {self.recipient} | {self.status}"
+
+
 from django.contrib.auth.models import User
 from django.db import models
 from django.db.models.signals import post_save

@@ -9,6 +9,36 @@ from .models import (
     MessageTemplates,
 )
 
+from django.contrib import admin
+from .models import SentMessageLog
+
+
+@admin.register(SentMessageLog)
+class SentMessageLogAdmin(admin.ModelAdmin):
+
+    list_display = (
+        'id',
+        'customer',
+        'recipient',
+        'channel',
+        'status',
+        'created_at',   # FIXED
+    )
+
+    list_filter = (
+        'channel',
+        'status',
+        'created_at',   # FIXED
+    )
+
+    search_fields = (
+        'recipient',
+        'message_id',
+        'rendered_body',
+    )
+
+    ordering = ('-created_at',)
+
 # ======================================
 # 🔹 PaymentsRecord Admin
 # ======================================

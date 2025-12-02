@@ -2,7 +2,7 @@
 
 from django.urls import path
 from . import views
-from .views import api_ai_personalized
+from .views import api_ai_personalized,message_timeline_api
 
 urlpatterns = [
 
@@ -46,4 +46,9 @@ urlpatterns = [
     # Final URLs: /recommendations/send_whatsapp/, /recommendations/send_email/
     path('send_whatsapp/', views.send_whatsapp, name='send_whatsapp'),
     path('send_email/', views.send_email, name='send_email'),
+
+    path('webhook/rapbooster/', views.rapbooster_webhook, name='rapbooster_webhook'),
+    path("timeline/<int:customer_id>/", message_timeline_api, name="timeline_api"),
+
+
 ]

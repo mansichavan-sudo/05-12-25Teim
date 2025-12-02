@@ -192,14 +192,18 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("FILE_UPLOAD_MAX_MEMORY_SIZE", 
 # ------------------------------------------------------
 # EMAIL
 # ------------------------------------------------------
-#EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+# ------------------------------------------------------
+# EMAIL (Gmail SMTP)
+# ------------------------------------------------------
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'  # MUST be SMTP
+# EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"  # ❌ REMOVE THIS
+
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 
 EMAIL_HOST_USER = "mansiichavan2004@gmail.com"
-EMAIL_HOST_PASSWORD = "evoypskskoxnpxiw"
+EMAIL_HOST_PASSWORD = "evoypskskoxnpxiw"   # Gmail App Password
 
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
@@ -208,8 +212,11 @@ DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 # ------------------------------------------------------
 WHATSAPP_API = os.environ.get("WHATSAPP_API", "")
 WHATSAPP_CHANNEL_ID = os.environ.get("WHATSAPP_CHANNEL_ID", "")
-
-RAPBOOSTER_API_URL = "https://api.rapbooster.in/message"   # or the exact endpoint they gave you
+ 
+# ------------------------------------------------------
+# WHATSAPP (RapBooster)
+# ------------------------------------------------------
+RAPBOOSTER_API_URL = "https://api.rapbooster.com/v1/send"
 RAPBOOSTER_API_KEY = "6538c8eff027d41e9151"
 
-FAST2SMS_API_KEY = "lmECgGI0f57i2x94H81uqVtTyObKhzFZMNLXA3oapseB6RQcJD5ZsIrukQRLzoCcKHWaBF6TliSXdUgA"
+#FAST2SMS_API_KEY = "lmECgGI0f57i2x94H81uqVtTyObKhzFZMNLXA3oapseB6RQcJD5ZsIrukQRLzoCcKHWaBF6TliSXdUgA"

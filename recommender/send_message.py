@@ -1,50 +1,101 @@
 import requests
 from django.conf import settings
-from recommender.models import SentMessageLog
+from crmapp.models import customer_details, MessageTemplates , SentMessageLog
+from recommender.models import PestRecommendation
 
-FAST2SMS_API_KEY = getattr(settings, "FAST2SMS_API_KEY", "lmECgGI0f57i2x94H81uqVtTyObKhzFZMNLXA3oapseB6RQcJD5ZsIrukQRLzoCcKHWaBF6TliSXdUgA")
-FAST2SMS_URL = "https://www.fast2sms.com/dev/bulkV2"
 
-def send_recommendation_message(phone_number, message, customer_name="Unknown"):
+RAPBOOSTER_API_KEY = "6538c8eff027d41e9151"
+RAPBOOSTER_URL = "https://backend.rapbooster.in/api/v1/send/message"
+
+
+def send_recommendation_message(template_id, customer_id):
     """
-    Send SMS using Fast2SMS API and log the result in the database.
+    Send WhatsApp message using RapBooster API and auto-fill:
+    - customer name
+    - base product
+    - recommended product
+    Then save the message in SentMessageLog.
     """
+
+    # --------------------------
+    # 1. FETCH TEMPLATE
+    # --------------------------
+    template = MessageTemplates.objects.get(id=template_id)
+
+    # --------------------------
+    # 2. FETCH CUSTOMER
+    # --------------------------
+    customer = customer_details.objects.get(id=customer_id)
+
+    # --------------------------
+    # 3. FETCH RECOMMENDATION
+    # --------------------------
+    rec = PestRecommendation.objects.filter(customer_id=customer_id).first()
+
+    base_product = rec.base_product.name if rec else ""
+    recommended_product = rec.recommended_product.name if rec else ""
+
+    # --------------------------
+    # 4. AUTO-FILL TEMPLATE VARIABLES
+    # --------------------------
+    body = (
+        template.body
+        .replace("{{ customer_name }}", customer.customer_name)
+        .replace("{{ product }}", base_product)
+        .replace("{{ recommended_product }}", recommended_product)
+    )
+
+    subject = template.subject if template.subject else ""
+
+    # --------------------------
+    # 5. RAPBOOSTER PAYLOAD
+    # --------------------------
     payload = {
-        "sender_id": "TXTIND",
-        "message": message,
-        "language": "english",
-        "route": "v3",
-        "numbers": str(phone_number),
+        "message": body,
+        "phone_numbers": [customer.phone],
+        "type": "whatsapp"
     }
 
     headers = {
-        "authorization": FAST2SMS_API_KEY,
-        "cache-control": "no-cache",
-        "accept": "application/json",
+        "Authorization": RAPBOOSTER_API_KEY,
+        "Content-Type": "application/json",
     }
 
+    # --------------------------
+    # 6. SEND MESSAGE
+    # --------------------------
     try:
-        response = requests.post(FAST2SMS_URL, data=payload, headers=headers, timeout=10)
-        status = "Delivered" if response.status_code == 200 else "Failed"
-
-        SentMessageLog.objects.create(
-            customer_name=customer_name,
-            phone=phone_number,
-            message_text=message,
-            status=status,
-            api_response=response.text,
+        response = requests.post(
+            RAPBOOSTER_URL,
+            json=payload,
+            headers=headers,
+            timeout=15
         )
 
-        print(f"✅ SMS sent to {phone_number} | Status: {status}")
-        return response.status_code, response.text
+        status = "sent" if response.status_code == 200 else "failed"
 
     except Exception as e:
-        SentMessageLog.objects.create(
-            customer_name=customer_name,
-            phone=phone_number,
-            message_text=message,
-            status="Error",
-            api_response=str(e),
-        )
-        print(f"❌ Error sending SMS: {e}")
-        return 500, str(e)
+        response = None
+        status = "error"
+
+    # --------------------------
+    # 7. SAVE LOG PROPERLY
+    # --------------------------
+    SentMessageLog.objects.create(
+        template=template,
+        customer=customer,
+        recipient=customer.phone,
+        channel="whatsapp",
+        rendered_subject=subject,
+        rendered_body=body,
+        status=status,
+        provider_response=response.text if response else str(e),
+    )
+
+    return {
+        "status": status,
+        "customer": customer.customer_name,
+        "sent_to": customer.phone,
+        "message": body,
+        "response": response.text if response else str(e),
+    }
