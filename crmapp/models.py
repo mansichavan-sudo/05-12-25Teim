@@ -1006,3 +1006,53 @@ class CustomerPurchase(models.Model):
     def __str__(self):
         return f"Customer {self.customer_id} → Product {self.product_id}"
 
+
+from django.utils import timezone
+
+
+# ----------------------------------------------------------
+# PURCHASE HISTORY TABLE
+# ----------------------------------------------------------
+from django.db import models
+from crmapp.models import customer_details, Product
+
+
+# ---------------- PURCHASE HISTORY MODEL ----------------
+class PurchaseHistory(models.Model):
+    INVOICE_TYPES = (
+        ("NORMAL", "Normal Invoice"),
+        ("TAX_INVOICE", "Tax Invoice"),
+    )
+
+    customer = models.ForeignKey(customer_details, on_delete=models.CASCADE)
+
+    # For normal invoice (FK present)
+    product = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True, blank=True)
+
+    # For tax invoice (no product FK available)
+    product_name = models.CharField(max_length=255, null=True, blank=True)
+
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+
+    invoice = models.ForeignKey(
+        'Invoice',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="purchase_history"
+    )
+    tax_invoice = models.ForeignKey(
+        'TaxInvoice',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="purchase_history"
+    )
+
+    invoice_type = models.CharField(max_length=20, choices=INVOICE_TYPES, default="NORMAL")
+    purchased_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        title = self.product.product_name if self.product else self.product_name
+        return f"{self.customer.fullname} - {title}"

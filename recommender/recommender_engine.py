@@ -4,13 +4,25 @@ import pickle
 import numpy as np
 import pandas as pd
 from django.db import models
+from django.db.models import Count
+
 
 
 from django.db import connection
 from sklearn.metrics.pairwise import cosine_similarity
 
 from recommender.models import Rating, Item, SavedModel, PestRecommendation
-from crmapp.models import Product, customer_details
+
+from crmapp.models import (
+    Product,
+    customer_details,
+    TaxInvoice,
+    TaxInvoiceItem,
+    ServiceProduct,
+    PurchaseHistory
+
+)
+
 
 
 # ------------------------
@@ -29,40 +41,135 @@ USER_TOP5 = os.path.join(TRAINED_MODELS_DIR, "user_top5_recommendations.csv")
 # Fabricated helpers
 # ------------------------
 def load_fabricated_models():
-    """Load fabricated CSVs if present (optional helper)."""
+    """Load fabricated CSVs / pickles if present (optional helper)."""
+    user_item_df = None
+    item_sim = None
+    rec_df = None
+
     try:
-        user_item_df = pd.read_csv(USER_ITEM_MATRIX, index_col=0) if os.path.exists(USER_ITEM_MATRIX) else None
-        item_sim_df = pd.read_csv(ITEM_SIM_MODEL, index_col=0) if os.path.exists(ITEM_SIM_MODEL) else None
-        rec_df = pd.read_csv(USER_TOP5, index_col=0) if os.path.exists(USER_TOP5) else None
-        return user_item_df, item_sim_df, rec_df
+        if os.path.exists(USER_ITEM_MATRIX):
+            try:
+                user_item_df = pd.read_csv(USER_ITEM_MATRIX, index_col=0)
+            except Exception as e:
+                print("⚠️ Could not read USER_ITEM_MATRIX as CSV:", e)
+
+        if os.path.exists(ITEM_SIM_MODEL):
+            # ITEM_SIM_MODEL may be a pickle (preferred) or CSV — try pickle first
+            try:
+                with open(ITEM_SIM_MODEL, "rb") as f:
+                    item_sim = pickle.load(f)
+                    # if it's numpy array, convert to DataFrame with default index/cols (caller must handle mapping)
+                    if isinstance(item_sim, np.ndarray):
+                        item_sim = pd.DataFrame(item_sim)
+            except Exception:
+                try:
+                    # fallback try reading as csv
+                    item_sim = pd.read_csv(ITEM_SIM_MODEL, index_col=0)
+                except Exception as e:
+                    print("⚠️ Could not load ITEM_SIM_MODEL:", e)
+                    item_sim = None
+
+        if os.path.exists(USER_TOP5):
+            try:
+                rec_df = pd.read_csv(USER_TOP5, index_col=0)
+            except Exception as e:
+                print("⚠️ Could not read USER_TOP5:", e)
+                rec_df = None
+
+        return user_item_df, item_sim, rec_df
     except Exception as e:
         print("⚠️ Error loading fabricated models:", e)
         return None, None, None
 
+ 
+def get_fabricated_recommendations(customer_id, top_n=5):
+    """
+    Return fabricated top-n recommendations as:
+        [{ "product_id": <id>, "score": <float> }, ...]
+    Works whether DF index is int or str.
+    """
+    import pandas as pd
 
-def get_fabricated_recommendations(user_id, top_n=5):
-    """Return fabricated top-n if available (index may be str or int)."""
     _, _, rec_df = load_fabricated_models()
-    if rec_df is None:
+    if rec_df is None or rec_df.empty:
         return []
 
-    # ensure consistent index type
-    idx = str(user_id)
-    if idx in rec_df.index:
-        items = rec_df.loc[idx].dropna().tolist()
-        return items[:top_n]
-    # try integer index
-    if user_id in rec_df.index:
-        items = rec_df.loc[user_id].dropna().tolist()
-        return items[:top_n]
+    # Convert id to string for matching
+    cid_str = str(customer_id)
 
-    # fallback: most frequent recommendations across users
+    # -----------------------------------------
+    # 1️⃣ Check if index contains string version
+    # -----------------------------------------
+    if cid_str in rec_df.index:
+        row = rec_df.loc[cid_str].dropna().tolist()
+        return _normalize_rec_items(row, top_n)
+
+    # -----------------------------------------
+    # 2️⃣ Check int index match
+    # -----------------------------------------
+    if customer_id in rec_df.index:
+        row = rec_df.loc[customer_id].dropna().tolist()
+        return _normalize_rec_items(row, top_n)
+
+    # -----------------------------------------
+    # 3️⃣ Fallback → most frequent recommended items across all users
+    # -----------------------------------------
     try:
         melted = rec_df.melt(value_name="product").dropna(subset=["product"])
         top = melted["product"].value_counts().head(top_n).index.tolist()
-        return top
+        return _normalize_rec_items(top, top_n)
     except Exception:
         return []
+
+
+def _normalize_rec_items(items, top_n):
+    """
+    Normalize recommendation items into a clean standard format:
+
+        { 
+            "product_id": <int>, 
+            "score": <float> 
+        }
+
+    Accepts any of these formats:
+        - raw product_id (int/str)
+        - dict: {"product_id": 10, "score": 0.9}
+        - dict: {"id": 10}
+        - fabricated CSV values (strings)
+    """
+
+    normalized = []
+
+    for v in items[:top_n]:
+
+        # ------------------------------
+        # If already dict (recommended)
+        # ------------------------------
+        if isinstance(v, dict):
+            pid = v.get("product_id") or v.get("id")
+            score = float(v.get("score", 1.0))
+
+        # ------------------------------
+        # If value is raw product id
+        # ------------------------------
+        else:
+            pid = v
+            score = 1.0
+
+        # ------------------------------
+        # Convert to integer if possible
+        # ------------------------------
+        try:
+            pid = int(pid)
+        except:
+            pass
+
+        normalized.append({
+            "product_id": pid,
+            "score": score
+        })
+
+    return normalized
 
 
 # ------------------------
@@ -92,238 +199,452 @@ def load_trained_model(model_name="recommender_similarity"):
         return None
 
 
-# ------------------------
-# Generate recommendations for a single user
-# ------------------------ 
-def generate_recommendations_for_user(customer_id, top_n=5):  # Renamed from user_id
+# -----------------------------------------------------------
+# Generate Recommendations for a Customer
+# -----------------------------------------------------------  
+
+# -----------------------------------------------------------
+# FINAL HYBRID AGGREGATOR (fixed to consume dicts)
+# -----------------------------------------------------------
+def generate_recommendations_for_user(customer_id, top_n=5):
     """
-    Return top-N Item queryset for given customer_id (customer id).
-    Priorities:
-      1) fabricated (CSV)
-      2) collaborative model (saved similarity)
-      3) popular fallback
+    Hybrid Recommendation Engine
+    Weights:
+        - Content-Based:      0.4
+        - User-Based CF:      0.3
+        - Cross-Sell:         0.2
+        - Upsell:             0.1
+
+    Returns: list of Product instances with .score attribute (float)
     """
     try:
-        # 1) fabricated
-        fabricated = get_fabricated_recommendations(customer_id, top_n)  # Updated
-        if fabricated:
-            pids = [int(x) for x in fabricated[:top_n] if str(x).isdigit()]
-            items = Item.objects.filter(product_id__in=pids)
-            # Attach dummy score for consistency
-            for item in items:
-                item.score = None  # Or compute if possible
-            return items
+        hybrid_results = {}  # pid -> score
 
-        # 2) build rating pivot
-        qs = Rating.objects.all().values("customer_id", "product_id", "rating")
-        df = pd.DataFrame(list(qs))
-        if df.empty:
-            # fallback: return first top items by popularity (empty if none)
-            top_products = Rating.objects.all().values("product_id").annotate(avg=models.Avg("rating")).order_by("-avg")[:top_n]
-            top_pids = [r["product_id"] for r in top_products]
-            items = Item.objects.filter(product_id__in=top_pids)[:top_n]
-            for item in items:
-                item.score = None
-            return items
+        # 1) Fetch purchase history
+        purchase_qs = PurchaseHistory.objects.filter(customer_id=customer_id)
+        last_product = None
+        if purchase_qs.exists():
+            last = purchase_qs.order_by("-purchased_at").first()
+            last_product = last.product if last else None
 
-        # pivot: index = customer_id, columns = product_id
-        pivot = df.pivot_table(index="customer_id", columns="product_id", values="rating", aggfunc="mean").fillna(0)
+        # A. Content-based (0.4)
+        if last_product:
+            cb = get_content_based_recommendations(last_product.product_name, top_n=10)
+            for rec in cb:
+                pid = int(rec["product_id"])
+                score = float(rec.get("score", 1.0) or 1.0)
+                hybrid_results[pid] = hybrid_results.get(pid, 0.0) + 0.4 * score
 
-        if customer_id not in pivot.index:  # Updated
-            # user has no ratings -> return top-rated products
-            top_products = df.groupby("product_id")["rating"].mean().sort_values(ascending=False).head(top_n).index.tolist()
-            items = Item.objects.filter(product_id__in=top_products)
-            for item in items:
-                item.score = None
-            return items
+        # B. User-based (0.3)
+        ub = get_user_based_recommendations(customer_id, top_n=10)
+        for rec in ub:
+            pid = int(rec["product_id"])
+            score = float(rec.get("score", 1.0) or 1.0)
+            hybrid_results[pid] = hybrid_results.get(pid, 0.0) + 0.3 * score
 
-        # load saved item-item similarity
-        similarity_df = load_trained_model()
-        if similarity_df is None:
-            # fallback: compute simple item similarity from current data
-            matrix = pivot.values
-            if matrix.size == 0:
-                return Item.objects.none()  # Empty queryset
-            try:
-                computed = cosine_similarity(matrix.T)
-                similarity_df = pd.DataFrame(computed, index=pivot.columns, columns=pivot.columns)
-            except Exception as e:
-                print(f"⚠️ Error computing similarity: {e}")
-                # fallback to popularity
-                top_products = df.groupby("product_id")["rating"].mean().sort_values(ascending=False).head(top_n).index.tolist()
-                items = Item.objects.filter(product_id__in=top_products)
-                for item in items:
-                    item.score = None
-                return items
-
-        # align matrix columns (similarity_df index must be product ids)
-        if isinstance(similarity_df, pd.DataFrame):
-            sim_index = list(map(int, similarity_df.index))
+        # C. Cross-sell (0.2)
+        if last_product:
+            cs = get_crosssell_recommendations(last_product.product_id, top_n=10)
         else:
-            sim_index = list(pivot.columns)  # best-effort
+            cs = get_crosssell_recommendations(customer_id, top_n=10)  # fallback still returns reasonable list
+        for rec in cs:
+            pid = int(rec["product_id"])
+            score = float(rec.get("score", 1.0) or 1.0)
+            hybrid_results[pid] = hybrid_results.get(pid, 0.0) + 0.2 * score
 
-        # create user vector aligned to sim_index
-        user_vector = pivot.loc[customer_id].reindex(index=sim_index, fill_value=0).values.reshape(1, -1)  # Updated
+        # D. Upsell (0.1)
+        if last_product:
+            ups = get_upsell_recommendations(last_product.product_id, top_n=10)
+            for rec in ups:
+                pid = int(rec["product_id"])
+                score = float(rec.get("score", 1.0) or 1.0)
+                hybrid_results[pid] = hybrid_results.get(pid, 0.0) + 0.1 * score
 
-        # if similarity is df, convert to numpy with same order
-        if isinstance(similarity_df, pd.DataFrame):
-            sim_mat = similarity_df.reindex(index=sim_index, columns=sim_index).fillna(0).values
-        else:
-            sim_mat = np.array(similarity_df)
+        # If nothing produced, try fabricated
+        if not hybrid_results:
+            fab = get_fabricated_recommendations(customer_id, top_n)
+            for rec in fab:
+                pid = int(rec["product_id"])
+                hybrid_results[pid] = hybrid_results.get(pid, 0.0) + (rec.get("score") or 1.0)
 
-        # score = sim * user_vector
+        # Final ranking
+        ranked = sorted(hybrid_results.items(), key=lambda x: x[1], reverse=True)[:top_n]
+        results = []
+        for pid, sc in ranked:
+            prod = Product.objects.filter(product_id=pid).first()
+            if not prod:
+                # try Item model if Product missing
+                it = Item.objects.filter(product_id=pid).first()
+                if it:
+                    # wrap item into minimal Product-like object by using Product lookup if possible
+                    # but prefer returning Product instances; skip otherwise
+                    continue
+                else:
+                    continue
+            prod.score = round(float(sc), 4)
+            results.append(prod)
+
+        # Save to DB (best-effort)
         try:
-            scores = np.dot(sim_mat, user_vector.T).flatten()
+            save_recommendations_to_db(customer_id, results)
         except Exception as e:
-            print(f"⚠️ Error computing scores: {e}")
-            scores = np.zeros(len(sim_index))
+            print("Could not save recommendations:", e)
 
-        # build predictions DataFrame
-        preds = pd.DataFrame({"product_id": sim_index, "score": scores})
-        # exclude items already rated by user
-        rated = pivot.loc[customer_id][pivot.loc[customer_id] > 0].index.tolist()  # Updated
-        preds = preds[~preds["product_id"].isin(rated)]
-        preds = preds.sort_values("score", ascending=False).head(top_n)
-
-        items = Item.objects.filter(product_id__in=preds["product_id"].astype(int).tolist())
-        # Attach scores to items
-        score_dict = dict(zip(preds["product_id"], preds["score"]))
-        for item in items:
-            item.score = score_dict.get(item.product_id, None)
-        return items
+        return results
 
     except Exception as e:
-        print(f"⚠️ Unexpected error in generate_recommendations_for_user for customer {customer_id}: {e}")  # Updated
-        return Item.objects.none()  # Return empty queryset on any error
+        print("❌ Error in generate_recommendations_for_user:", e)
+        # fallback to purchase-history
+        try:
+            fh = get_purchase_history_signal(customer_id, top_n)
+            # convert dicts to Product objects where possible
+            out = []
+            for rec in fh:
+                pid = rec.get("product_id")
+                prod = Product.objects.filter(product_id=pid).first()
+                if prod:
+                    prod.score = rec.get("score", 0)
+                    out.append(prod)
+            return out
+        except Exception:
+            return []
+# =========================================================
+# 8️⃣ SAVE RESULTS INTO pest_recommendations
+# ========================================================= 
 
-# ------------------------
-# SQL/ORM-based content & collaborative helpers
-# ------------------------
+# -----------------------------------------------------------
+# Save results into PestRecommendation table (recommended_product must be a Product instance)
+# -----------------------------------------------------------
+def save_recommendations_to_db(customer_id, products):
+    """
+    products: list of Product instances (with optional .score attribute)
+    """
+    try:
+        PestRecommendation.objects.filter(customer_id=customer_id).delete()
+    except Exception:
+        pass
+
+    for p in products:
+        try:
+            conf = getattr(p, "score", None) or 0.0
+            # If 'p' is dict instead of Product, handle that
+            if isinstance(p, dict):
+                prod = Product.objects.filter(product_id=int(p.get("product_id"))).first()
+                recommended_prod = prod
+                conf = float(p.get("score", conf))
+            else:
+                recommended_prod = p
+
+            if not recommended_prod:
+                continue
+
+            PestRecommendation.objects.create(
+                customer_id=customer_id,
+                base_product_id=None,
+                recommended_product=recommended_prod,
+                recommendation_type="hybrid",
+                confidence_score=conf
+            )
+        except Exception as e:
+            print("save_recommendations_to_db error:", e)
+            continue
+
+
+
+# -----------------------------------------------------------
+# Fallback using PurchaseHistory
+# -----------------------------------------------------------
+def fallback_using_purchase_history(customer_id, top_n=5):
+    """
+    If no ratings exist — use products bought by similar customers.
+    """
+
+    # What customer bought
+    user_purchases = list(
+        PurchaseHistory.objects
+        .filter(customer_id=customer_id)
+        .values_list("product_id", flat=True)
+    )
+
+    # If no purchase history → Popular fallback
+    if not user_purchases:
+        return fallback_popularity(top_n)
+
+    # Find other customers who bought same products
+    similar_customers = (
+        PurchaseHistory.objects
+        .filter(product_id__in=user_purchases)
+        .exclude(customer_id=customer_id)
+        .values("customer_id")
+        .annotate(cnt=Count("product_id"))
+        .order_by("-cnt")
+    )
+
+    if not similar_customers:
+        return fallback_popularity(top_n)
+
+    similar_ids = [c["customer_id"] for c in similar_customers]
+
+    # Products they bought
+    also_bought = (
+        PurchaseHistory.objects
+        .filter(customer_id__in=similar_ids)
+        .exclude(product_id__in=user_purchases)
+        .values("product_id")
+        .annotate(freq=Count("product_id"))
+        .order_by("-freq")[:top_n]
+    )
+
+    product_ids = [x["product_id"] for x in also_bought]
+
+    items = Item.objects.filter(product_id__in=product_ids)
+
+    for item in items:
+        item.score = None
+
+    return items
+
+# -----------------------------------------------------------
+# POPULARITY FALLBACK
+# -----------------------------------------------------------
+def fallback_popularity(top_n=5):
+    """
+    Default fallback → popular products (based on frequency in PurchaseHistory).
+    """
+
+    top_products = (
+        PurchaseHistory.objects
+        .values("product_id")
+        .annotate(freq=Count("product_id"))
+        .order_by("-freq")[:top_n]
+    )
+
+    product_ids = [p["product_id"] for p in top_products]
+
+    items = Item.objects.filter(product_id__in=product_ids)
+
+    for item in items:
+        item.score = None
+
+    return items
+
+
+
+# ---------------------------------------------------------
+# 1️⃣ PURCHASE HISTORY – CUSTOMER → PRODUCTS
+# ---------------------------------------------------------
+def get_customer_purchase_history(customer_id):
+    """Return list of product IDs purchased by customer."""
+    invoice_items = (
+        TaxInvoiceItem.objects
+        .filter(tax_invoice__customer_id=customer_id)
+        .values_list("product_name", flat=True)
+    )
+
+    # Match product_name → Product table
+    product_ids = Product.objects.filter(
+        product_name__in=list(invoice_items)
+    ).values_list("product_id", flat=True)
+
+    return list(product_ids)
+
+
+# ---------------------------------------------------------
+# 2️⃣ PRODUCT → CUSTOMERS WHO BOUGHT IT (for collaborative)
+# ---------------------------------------------------------
+def get_customers_who_bought_product(product_id):
+    product = Product.objects.filter(product_id=product_id).first()
+    if not product:
+        return []
+
+    return list(
+        TaxInvoiceItem.objects
+        .filter(product_name=product.product_name)
+        .values_list("tax_invoice__customer_id", flat=True)
+    )
+
+
+
+# ---------------------------------------------------------------------
+# ✅ Content-Based Filtering using PestRecommendation table
+# ---------------------------------------------------------------------
 def get_content_based_recommendations(product_name, top_n=5):
     """
-    Return recommended product names for a base product_name using PestRecommendation table (ORM).
+    Returns recommendations using actual data from PestRecommendation table.
+    FIXED:
+    - recommended_product was not showing → because .values() missing correct field names
     """
+
     qs = (
         PestRecommendation.objects
         .filter(base_product__product_name__icontains=product_name)
         .order_by("-confidence_score")
-        .values_list("recommended_product__product_name", flat=True)
-        .distinct()[:top_n]
+        .values(
+            "recommended_product__product_id",
+            "recommended_product__product_name",
+            "base_product__product_name",
+            "confidence_score"
+        )[:top_n]
     )
-    return list(qs)
 
+    # Convert queryset to clean list
+    results = [
+        {
+            "product_id": row["recommended_product__product_id"],
+            "product_name": row["recommended_product__product_name"],
+            "base_product": row["base_product__product_name"],
+            "confidence": float(row["confidence_score"]),
+        }
+        for row in qs
+    ]
 
-def get_collaborative_recommendations(customer_id, top_k=5):
+    return results
+ 
+
+ 
+# ---------------------------------------------------------------------
+# ✅ Collaborative Filtering (Customers who bought X also bought Y)
+# ---------------------------------------------------------------------
+def get_collaborative_recommendations(product_id, top_n=5):
     """
-    Find other customers who share recommended products (from PestRecommendation).
-    Returns list of dicts: {customer_id, common_count}
+    Product-to-product collaborative filtering
     """
-    rows = (
-        PestRecommendation.objects
-        .filter(customer_id=customer_id)
-        .values_list("recommended_product_id", flat=True)
-    )
-    if not rows:
+
+    # customers who bought this product
+    customers = PurchaseHistory.objects.filter(
+        product_id=product_id
+    ).values_list("customer_id", flat=True)
+
+    if not customers:
         return []
 
-    recommended_ids = list(rows)
-    # Count other customers who have the same recommended products
+    # products purchased by those customers
     qs = (
-        PestRecommendation.objects
-        .filter(recommended_product_id__in=recommended_ids)
-        .exclude(customer_id=customer_id)
-        .values("customer_id")
-        .annotate(common_count=models.Count("recommended_product_id"))
-        .order_by("-common_count")[:top_k]
+        PurchaseHistory.objects.filter(customer_id__in=customers)
+        .exclude(product_id=product_id)
+        .values("product_id", "product__product_name")
+        .annotate(freq=Count("product_id"))
+        .order_by("-freq")[:top_n]
     )
-    return [{"customer_id": r["customer_id"], "common_count": r["common_count"]} for r in qs]
+
+    return [
+        {
+            "product_id": row["product_id"],
+            "product_name": row["product__product_name"],
+            "score": row["freq"]
+        }
+        for row in qs
+    ]
 
 
+# ---------------------------------------------------------------------
+# ✅ Upsell Recommendations (higher price / premium versions)
+# ---------------------------------------------------------------------
 def get_upsell_recommendations(product_id, top_n=5):
     """
-    Return product names recommended as upsell for a base product_id.
+    Recommends higher-priced products in the same category.
     """
-    qs = (
-        PestRecommendation.objects
-        .filter(base_product_id=product_id, recommendation_type__iexact="upsell")
-        .order_by("-confidence_score")
-        .values_list("recommended_product__product_name", flat=True)
-        .distinct()[:top_n]
-    )
-    return list(qs)
 
-
-def get_crosssell_recommendations(user, top_n=5):
-    """
-    Recommend items for a user (customer) excluding already rated/purchased.
-    Returns Item objects.
-    """
-    user_id = user.id if hasattr(user, "id") else int(user)
-    purchased_pids = Rating.objects.filter(customer_id=user_id).values_list("product_id", flat=True).distinct()
-    crosssell = Item.objects.exclude(product_id__in=list(purchased_pids)).order_by("?")[:top_n]
-    return list(crosssell)
-
-
-# ------------------------
-# User-based recommender (file-backed)
-# ------------------------
-def get_user_based_recommendations(user_id, top_n=5):
-    """
-    Uses precomputed CSVs user_item_matrix and user_similarity_matrix
-    to recommend items for a user.
-    """
-    base_dir = os.getcwd()
-    user_item_path = os.path.join(base_dir, "trained_models", "user_item_matrix.csv")
-    similarity_path = os.path.join(base_dir, "trained_models", "user_similarity_matrix.csv")
-
-    if not os.path.exists(user_item_path) or not os.path.exists(similarity_path):
-        print("⚠️ Precomputed files missing.")
-        return []
-
-    user_item = pd.read_csv(user_item_path, index_col=0)
-    similarity = pd.read_csv(similarity_path, index_col=0)
-
-    # ensure integer indices
     try:
-        user_item.index = user_item.index.astype(int)
-        similarity.index = similarity.index.astype(int)
-        similarity.columns = similarity.columns.astype(int)
-    except Exception:
-        pass
-
-    if user_id not in user_item.index:
-        print(f"⚠️ User {user_id} not found in matrix.")
+        base = Product.objects.get(product_id=product_id)
+    except Product.DoesNotExist:
         return []
 
-    sim_scores = similarity.loc[user_id]
-    sim_scores = sim_scores[sim_scores > 0]
+    qs = (
+        Product.objects.filter(category=base.category)
+        .exclude(product_id=product_id)
+        .filter(price__gt=base.price)
+        .order_by("price")[:top_n]
+    )
 
-    if sim_scores.empty:
-        print("⚠️ No similar users found.")
+    return [
+        {"product_id": p.product_id, "product_name": p.product_name, "price": float(p.price)}
+        for p in qs
+    ]
+
+
+
+# ---------------------------------------------------------------------
+# ✅ Cross-Sell Recommendations ("Frequently bought together")
+# ---------------------------------------------------------------------
+def get_crosssell_recommendations(product_id, top_n=5):
+    """
+    Recommended products bought together with this product.
+    """
+
+    customers = PurchaseHistory.objects.filter(
+        product_id=product_id
+    ).values_list("customer_id", flat=True)
+
+    if not customers:
         return []
 
-    user_ratings = user_item.loc[user_id]
-    unrated_items = user_ratings[user_ratings == 0].index
+    qs = (
+        PurchaseHistory.objects.filter(customer_id__in=customers)
+        .exclude(product_id=product_id)
+        .values("product_id", "product__product_name")
+        .annotate(freq=Count("product_id"))
+        .order_by("-freq")[:top_n]
+    )
 
-    weighted_scores = {}
-    for item in unrated_items:
-        total_sim, weighted_sum = 0.0, 0.0
-        for other_user, score in sim_scores.items():
-            if user_item.loc[other_user, item] > 0:
-                weighted_sum += score * user_item.loc[other_user, item]
-                total_sim += score
-        if total_sim > 0:
-            weighted_scores[item] = weighted_sum / total_sim
+    return [
+        {"product_id": row["product_id"], "product_name": row["product__product_name"], "score": row["freq"]}
+        for row in qs
+    ]
 
-    if not weighted_scores:
-        item_means = user_item.replace(0, np.nan).mean(axis=0).sort_values(ascending=False)
-        return item_means.head(top_n).index.tolist()
+# ---------------------------------------------------------------------
+# ✅ User-Based Recommendations
+# ---------------------------------------------------------------------
+def get_user_based_recommendations(customer_id, top_n=5):
+    """
+    Combo of:  
+    - User purchase history  
+    - Similar customers  
+    """
 
-    ranked = sorted(weighted_scores.items(), key=lambda x: x[1], reverse=True)
-    top_items = [int(item) for item, _ in ranked[:top_n]]
-    items = Item.objects.filter(product_id__in=top_items).values_list("product_id", "title", "category")
-    return [f"{i[1]} (Category: {i[2]})" for i in items]
+    return get_purchase_history_signal(customer_id, top_n=top_n)
 
+
+# ---------------------------------------------------------------------
+# ✅ Purchase History Signals — MOST IMPORTANT
+# ---------------------------------------------------------------------
+def get_purchase_history_signal(customer_id, top_n=5):
+    """
+    Uses real customer purchase history to recommend products.
+    - Finds products purchased by similar customers.
+    """
+
+    # 1. Get all products purchased by the user
+    user_products = PurchaseHistory.objects.filter(
+        customer_id=customer_id
+    ).values_list("product_id", flat=True)
+
+    if not user_products:
+        return []
+
+    # 2. Users who bought same products
+    similar_customers = PurchaseHistory.objects.filter(
+        product_id__in=user_products
+    ).exclude(customer_id=customer_id).values_list("customer_id", flat=True)
+
+    if not similar_customers:
+        return []
+
+    # 3. Products they purchased
+    qs = (
+        PurchaseHistory.objects.filter(customer_id__in=similar_customers)
+        .exclude(product_id__in=user_products)
+        .values("product_id", "product__product_name")
+        .annotate(freq=Count("product_id"))
+        .order_by("-freq")[:top_n]
+    )
+
+    return [
+        {"product_id": row["product_id"], "product_name": row["product__product_name"], "score": row["freq"]}
+        for row in qs
+    ]
+
+ 
 
 # ------------------------
 # Train and save collaborative (item-item) model
@@ -332,34 +653,33 @@ def train_and_save_model():
     """
     Train item-item similarity (cosine) from Rating table and save with SavedModel.
     """
-    qs = Rating.objects.all().values("customer_id", "product_id", "rating")
-    df = pd.DataFrame(list(qs))
+    try:
+        qs = Rating.objects.all().values("customer_id", "product_id", "rating")
+        df = pd.DataFrame(list(qs))
 
-    if df.empty:
-        print("❌ No ratings found in DB.")
+        if df.empty:
+            print("❌ No ratings found in DB.")
+            return None
+
+        matrix = df.pivot_table(index="customer_id", columns="product_id", values="rating", aggfunc="mean").fillna(0)
+
+        sim = cosine_similarity(matrix.T)
+        sim_df = pd.DataFrame(sim, index=matrix.columns, columns=matrix.columns)
+
+        model_path = os.path.join(TRAINED_MODELS_DIR, "recommender_similarity.pkl")
+        with open(model_path, "wb") as f:
+            pickle.dump(sim_df, f)
+
+        SavedModel.objects.update_or_create(
+            name="recommender_similarity",
+            defaults={"file_path": model_path},
+        )
+
+        print(f"✅ Model trained (items={len(sim_df)}) and saved → {model_path}")
+        return sim_df
+    except Exception as e:
+        print("Train model error:", e)
         return None
-
-    # pivot table: rows=customers, cols=products
-    matrix = df.pivot_table(index="customer_id", columns="product_id", values="rating", aggfunc="mean").fillna(0)
-
-    # compute item-item similarity
-    sim = cosine_similarity(matrix.T)
-    sim_df = pd.DataFrame(sim, index=matrix.columns, columns=matrix.columns)
-
-    # save to disk
-    model_path = os.path.join(TRAINED_MODELS_DIR, "recommender_similarity.pkl")
-    with open(model_path, "wb") as f:
-        pickle.dump(sim_df, f)
-
-    # save path to SavedModel table
-    SavedModel.objects.update_or_create(
-        name="recommender_similarity",
-        defaults={"file_path": model_path},
-    )
-
-    print(f"✅ Model trained (items={len(sim_df)}) and saved → {model_path}")
-    return sim_df
-
 
 
 def recommendations_with_scores(user_id, top_n=5):
@@ -424,3 +744,14 @@ def recommender_for_customer(customer_id, top_n=5):
     # Placeholder: top-rated items (just as example)
     top_items = Item.objects.all()[:top_n]
     return top_items
+
+
+
+# ------------------------------------------------------------
+# 3. COMBINED FUNCTION (Upsell + Cross-sell)
+# ------------------------------------------------------------
+def get_upsell_crosssell(product_id):
+    return {
+        "upsell": get_upsell_recommendations(product_id),
+        "cross_sell": get_crosssell_recommendations(product_id)
+    }

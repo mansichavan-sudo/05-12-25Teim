@@ -14,7 +14,7 @@ import re
 from .rapbooster_api import send_whatsapp_message, send_email_message, send_recommendation_message
 from django.shortcuts import get_object_or_404
 # Models
-from crmapp.models import MessageTemplates, Product, customer_details
+from crmapp.models import MessageTemplates, Product, customer_details ,PurchaseHistory
 from .models import Item, Rating, PestRecommendation
 
 # Recommender Engine
@@ -118,69 +118,79 @@ def crosssell_view(request, customer_id):
         return JsonResponse({'cross_sell_suggestions': results})
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
-
 # ============================================================
-# 6️⃣ DASHBOARD TABLE (CRM)
+# 6️⃣ FINAL DASHBOARD TABLE (CRM)
 # ============================================================
 def recommendation_dashboard(request):
     try:
-        filter_type = (request.GET.get("type") or "").strip()
+        filter_type = (request.GET.get("type") or "").strip().lower()
         search = request.GET.get("search", "").strip()
         sort_column = request.GET.get("sort", "confidence_score")
         sort_order = request.GET.get("order", "desc")
 
-        # Allowed sorting fields
         valid_columns = {
             "customer_name": "c.fullname",
-            "base_product": "bp.product_name",
+            "phone": "c.primarycontact",
+            "purchase_product": "ph.product_name",
+            "purchase_date": "ph.purchased_at",
+            "price": "ph.total_amount",
             "recommended_product": "rp.product_name",
+            "recommended_category": "rp.category",
             "recommendation_type": "pr.recommendation_type",
             "confidence_score": "pr.confidence_score",
         }
-        sort_field = valid_columns.get(sort_column, "pr.confidence_score")
-        order_sql = "DESC" if sort_order == "desc" else "ASC"
 
-        # Base SQL
+        sort_field = valid_columns.get(sort_column, "pr.confidence_score")
+        order_sql = "DESC" if sort_order.lower() == "desc" else "ASC"
+
         sql = """
             SELECT 
+                c.id AS customer_id,
                 c.fullname AS customer_name,
-                c.primarycontact AS phone_number,
-                bp.product_name AS base_product,
-                bp.category AS base_product_category,
+                c.primarycontact AS phone,
+
+                CONCAT_WS(', ',
+                    c.soldtopartyaddress,
+                    c.soldtopartycity,
+                    c.soldtopartystate,
+                    c.soldtopartypostal
+                ) AS full_address,
+
+                ph.product_name AS purchase_product,
+                ph.quantity AS quantity,
+                ph.total_amount AS price,
+                ph.purchased_at AS purchase_date,
+
                 rp.product_name AS recommended_product,
-                rp.category AS recommended_product_category,
+                rp.category AS recommended_category,
                 pr.recommendation_type,
                 pr.confidence_score
-            FROM pest_recommendations pr
-            LEFT JOIN crmapp_customer_details c ON pr.customer_id = c.id
-            LEFT JOIN crmapp_product bp ON pr.base_product_id = bp.product_id
-            LEFT JOIN crmapp_product rp ON pr.recommended_product_id = rp.product_id
-            WHERE 1=1
+
+            FROM crmapp_customer_details c
+            LEFT JOIN crmapp_purchasehistory ph ON c.id = ph.customer_id
+            LEFT JOIN pest_recommendations pr ON c.id = pr.customer_id
+            LEFT JOIN crmapp_product rp ON rp.product_id = pr.recommended_product_id
+            WHERE 1 = 1
         """
 
         params = []
 
-        # 🔥 Filter recommendation type (case-insensitive)
-        # Handles: "upsell", "UpSell", "up sell", "UP_SELL", etc.
         if filter_type:
             sql += " AND LOWER(pr.recommendation_type) LIKE %s"
-            params.append(f"%{filter_type.lower()}%")
+            params.append(f"%{filter_type}%")
 
-        # 🔍 Search (customer or products)
         if search:
             sql += """
                 AND (
                     c.fullname LIKE %s OR
-                    bp.product_name LIKE %s OR
+                    ph.product_name LIKE %s OR
                     rp.product_name LIKE %s
                 )
             """
             params.extend([f"%{search}%"] * 3)
 
-        # Sorting
         sql += f" ORDER BY {sort_field} {order_sql};"
 
-        # Fetch data
         with connection.cursor() as cursor:
             cursor.execute(sql, params)
             rows = cursor.fetchall()
@@ -188,18 +198,24 @@ def recommendation_dashboard(request):
         data = []
         for row in rows:
             data.append({
-                "customer_name": row[0],
-                "phone_number": str(row[1]) if row[1] else None,
-                "base_product": row[2],
-                "base_product_category": row[3],
-                "recommended_product": row[4],
-                "recommended_product_category": row[5],
-                "recommendation_type": row[6],
-                "confidence_score": float(row[7]) if row[7] is not None else None,
+                "customer_id": row[0],
+                "customer_name": row[1],
+                "phone": row[2],
+                "address": row[3],
+
+                # Fallback values for null purchase history
+                "purchase_product": row[4] or "—",
+                "quantity": row[5] or "—",
+                "price": float(row[6]) if row[6] is not None else "—",
+                "purchase_date": row[7] or "—",
+
+                "recommended_product": row[8] or "—",
+                "recommended_category": row[9] or "—",
+                "recommendation_type": row[10] or "—",
+                "confidence_score": float(row[11]) if row[11] else "—",
             })
 
-        # Pagination
-        page_obj = Paginator(data, 10).get_page(request.GET.get("page"))
+        page_obj = Paginator(data, 15).get_page(request.GET.get("page"))
 
         return render(request, "recommender/recommendation_dashboard.html", {
             "recommendations": page_obj.object_list,
@@ -213,9 +229,8 @@ def recommendation_dashboard(request):
     except Exception as e:
         return render(request, "recommender/recommendation_dashboard.html", {
             "recommendations": [],
-            "error": str(e)
+            "error": str(e),
         })
-
 
 # ============================================================
 # 7️⃣ GET ALL PRODUCTS
@@ -736,3 +751,62 @@ def message_timeline_api(request, customer_id):
         })
 
     return JsonResponse({"timeline": data})
+
+
+def get_purchase_history(customer_id):
+    history = []
+
+    # ------------------------------
+    # 1. ServiceProduct (FK → Product) ✔ MOST ACCURATE
+    # ------------------------------
+    from crmapp.models import ServiceProduct
+    sp = ServiceProduct.objects.filter(service__custid_id=customer_id)
+    for s in sp:
+        history.append({
+            'product_id': s.product_id,
+            'product_name': s.product.product_name,
+            'date': s.service.date if hasattr(s.service, 'date') else None,
+            'source': 'service_product'
+        })
+
+    # ------------------------------
+    # 2. Invoice (NO FK) → match product_name to Product table
+    # ------------------------------
+    from crmapp.models import invoice, Product
+
+    inv = invoice.objects.filter(custid_id=customer_id)
+    for i in inv:
+        product_name = i.description_of_goods.strip()
+        try:
+            match = Product.objects.get(product_name__icontains=product_name)
+            history.append({
+                'product_id': match.product_id,
+                'product_name': match.product_name,
+                'date': i.invoice_date,
+                'source': 'invoice'
+            })
+        except Product.DoesNotExist:
+            continue
+
+    return history
+
+
+
+def api_purchase_history(request, cid):
+    try:
+        customer = customer_details.objects.get(customer_id=cid)
+    except customer_details.DoesNotExist:
+        return JsonResponse({"error": "Invalid customer"}, status=404)
+
+    history = PurchaseHistory.objects.filter(customer=customer).order_by("-purchased_at")
+
+    data = []
+    for p in history:
+        data.append({
+            "product": p.product.product_name if p.product else p.product_name,
+            "quantity": float(p.quantity),
+            "total_amount": float(p.total_amount),
+            "date": p.purchased_at.strftime("%d-%m-%Y %I:%M %p"),
+        })
+
+    return JsonResponse({"history": data})

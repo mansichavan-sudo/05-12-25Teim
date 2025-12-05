@@ -1,30 +1,43 @@
 {% load static %}
 <!DOCTYPE html>
 <html>
+
 <head>
     <title>CRM Recommendation Dashboard</title>
 
-    <!-- Bootstrap CSS -->
+    <!-- Bootstrap -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 
-    <!-- Bootstrap Icons -->
+    <!-- Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
 
     <style>
         body {
             background: #f8f9fa;
         }
+
         .filter-btns .btn.active {
             background-color: #0d6efd;
-            color: white;
+            color: #fff;
         }
-        table th, table td {
+
+        table th,
+        table td {
             vertical-align: middle !important;
         }
+
         .action-icons i {
             cursor: pointer;
             font-size: 22px;
             margin-right: 8px;
+        }
+
+        .table {
+            font-size: 14px;
+        }
+
+        .card {
+            border-radius: 12px;
         }
     </style>
 </head>
@@ -38,228 +51,224 @@
     <!-- FILTER BUTTONS -->
     <div class="d-flex justify-content-center mb-3 flex-wrap filter-btns">
 
-        <a href="?type=&search={{ search }}" 
+        <a href="?type=&search={{ search }}"
            class="btn btn-outline-primary me-2 {% if not filter_type %}active{% endif %}">All</a>
 
-        <a href="?type=upsell&search={{ search }}" 
+        <a href="?type=upsell&search={{ search }}"
            class="btn btn-outline-primary me-2 {% if filter_type == 'upsell' %}active{% endif %}">Upsell</a>
 
-        <a href="?type=crosssell&search={{ search }}" 
+        <a href="?type=crosssell&search={{ search }}"
            class="btn btn-outline-primary me-2 {% if filter_type == 'crosssell' %}active{% endif %}">Cross-Sell</a>
 
-        <a href="?type=content&search={{ search }}" 
+        <a href="?type=content&search={{ search }}"
            class="btn btn-outline-primary me-2 {% if filter_type == 'content' %}active{% endif %}">Content-Based</a>
 
-        <a href="?type=collaborative&search={{ search }}" 
+        <a href="?type=collaborative&search={{ search }}"
            class="btn btn-outline-primary me-2 {% if filter_type == 'collaborative' %}active{% endif %}">Collaborative</a>
-
     </div>
 
     <!-- SEARCH BAR -->
     <div class="text-center mb-4">
         <form method="get">
             <input type="hidden" name="type" value="{{ filter_type }}">
-
-            <input type="text" name="search"
-                value="{{ search }}"
-                class="form-control d-inline-block"
-                style="width: 320px;"
-                placeholder="Search customer/product">
-
+            <input type="text" name="search" value="{{ search }}"
+                   class="form-control d-inline-block" style="width: 320px;"
+                   placeholder="Search customer/product">
             <button class="btn btn-primary mt-2">Search</button>
         </form>
     </div>
 
-    <!-- TABLE CARD -->
+    <!-- TABLE -->
     <div class="card shadow p-4">
         <table class="table table-striped table-bordered">
             <thead class="table-light">
-                <tr>
-                    <th>Customer</th>
-                    <th>Phone</th>
-                    <th>Base Product</th>
-                    <th>Base Category</th>
-                    <th>Recommended Product</th>
-                    <th>Rec. Category</th>
-                    <th>Type</th>
-                    <th>Confidence</th>
-                    <th>Action</th>
-                </tr>
+            <tr>
+                <th>Customer ID</th>
+                <th>Customer</th>
+                <th>Phone</th>
+                <th>Address</th>
+
+                <th>Purchase Product</th>
+                <th>Qty</th>
+                <th>Price</th>
+                <th>Purchase Date</th>
+
+                <th>Recommended Product</th>
+                <th>Category</th>
+                <th>Type</th>
+                <th>Confidence</th>
+
+                <th>Action</th>
+            </tr>
             </thead>
 
             <tbody>
-                {% for rec in recommendations %}
-                <tr>
-                    <td>{{ rec.customer_name }}</td>
-                    <td>{{ rec.phone_number }}</td>
-                    <td>{{ rec.base_product }}</td>
-                    <td>{{ rec.base_product_category }}</td>
-                    <td>{{ rec.recommended_product }}</td>
-                    <td>{{ rec.recommended_product_category }}</td>
-                    <td>{{ rec.recommendation_type }}</td>
-                    <td>{{ rec.confidence_score }}</td>
+            {% for rec in recommendations %}
+            <tr>
+                <td>{{ rec.customer_id }}</td>
+                <td>{{ rec.customer_name }}</td>
+                <td>{{ rec.phone }}</td>
+                <td>{{ rec.address }}</td>
 
-                    <!-- ACTION BUTTONS -->
-                    <td class="action-icons">
+                <td>{{ rec.purchase_product }}</td>
+                <td>{{ rec.quantity }}</td>
+                <td>{{ rec.price }}</td>
+                <td>{{ rec.purchase_date }}</td>
 
-                        <!-- WhatsApp -->
-                        <i class="bi bi-whatsapp text-success send-whatsapp"
-                           data-phone="{{ rec.phone_number }}"
-                           data-customer="{{ rec.customer_name }}"
-                           data-product="{{ rec.recommended_product }}">
-                        </i>
+                <td>{{ rec.recommended_product }}</td>
+                <td>{{ rec.recommended_category }}</td>
+                <td>{{ rec.recommendation_type }}</td>
+                <td>{{ rec.confidence_score }}</td>
 
-                        <!-- Email -->
-                        <i class="bi bi-envelope-fill text-primary send-email"
-                           data-email="{{ rec.email }}"
-                           data-customer="{{ rec.customer_name }}"
-                           data-product="{{ rec.recommended_product }}">
-                        </i>
+                <td class="action-icons">
 
-                    </td>
-                </tr>
-                {% endfor %}
+                    <!-- WhatsApp -->
+                    <i class="bi bi-whatsapp text-success send-whatsapp"
+                       data-phone="{{ rec.phone }}"
+                       data-customer="{{ rec.customer_name }}"
+                       data-product="{{ rec.recommended_product }}">
+                    </i>
+
+                    <!-- Email -->
+                    <i class="bi bi-envelope-fill text-primary send-email"
+                       data-email="{{ rec.email }}"
+                       data-customer="{{ rec.customer_name }}"
+                       data-product="{{ rec.recommended_product }}">
+                    </i>
+
+                </td>
+            </tr>
+            {% endfor %}
             </tbody>
-
         </table>
 
-        <!-- =================== PAGINATION UI =================== -->
+        <!-- PAGINATION -->
         <nav>
             <ul class="pagination justify-content-center mt-3">
 
                 {% if page_obj.has_previous %}
-                    <li class="page-item">
-                        <a class="page-link" href="?page=1&type={{ filter_type }}&search={{ search }}">First</a>
-                    </li>
-
-                    <li class="page-item">
-                        <a class="page-link" href="?page={{ page_obj.previous_page_number }}&type={{ filter_type }}&search={{ search }}">Previous</a>
-                    </li>
+                <li class="page-item">
+                    <a class="page-link"
+                       href="?page=1&type={{ filter_type }}&search={{ search }}">First</a>
+                </li>
+                <li class="page-item">
+                    <a class="page-link"
+                       href="?page={{ page_obj.previous_page_number }}&type={{ filter_type }}&search={{ search }}">
+                        Previous
+                    </a>
+                </li>
                 {% else %}
-                    <li class="page-item disabled"><span class="page-link">First</span></li>
-                    <li class="page-item disabled"><span class="page-link">Previous</span></li>
+                <li class="page-item disabled"><span class="page-link">First</span></li>
+                <li class="page-item disabled"><span class="page-link">Previous</span></li>
                 {% endif %}
 
                 <li class="page-item active">
-                    <span class="page-link">
-                        Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
-                    </span>
+                    <span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
                 </li>
 
                 {% if page_obj.has_next %}
-                    <li class="page-item">
-                        <a class="page-link" href="?page={{ page_obj.next_page_number }}&type={{ filter_type }}&search={{ search }}">Next</a>
-                    </li>
-
-                    <li class="page-item">
-                        <a class="page-link" href="?page={{ page_obj.paginator.num_pages }}&type={{ filter_type }}&search={{ search }}">Last</a>
-                    </li>
+                <li class="page-item">
+                    <a class="page-link"
+                       href="?page={{ page_obj.next_page_number }}&type={{ filter_type }}&search={{ search }}">
+                        Next
+                    </a>
+                </li>
+                <li class="page-item">
+                    <a class="page-link"
+                       href="?page={{ page_obj.paginator.num_pages }}&type={{ filter_type }}&search={{ search }}">
+                        Last
+                    </a>
+                </li>
                 {% else %}
-                    <li class="page-item disabled"><span class="page-link">Next</span></li>
-                    <li class="page-item disabled"><span class="page-link">Last</span></li>
+                <li class="page-item disabled"><span class="page-link">Next</span></li>
+                <li class="page-item disabled"><span class="page-link">Last</span></li>
                 {% endif %}
-
             </ul>
         </nav>
-        <!-- ====================================================== -->
-
     </div>
 
 </div>
 
-<!-- ========================= MODAL ========================= -->
+<!-- SEND MESSAGE MODAL -->
 <div class="modal fade" id="sendModal" tabindex="-1">
-  <div class="modal-dialog">
-    <div class="modal-content">
+    <div class="modal-dialog">
+        <div class="modal-content">
 
-      <div class="modal-header">
-         <h5 class="modal-title fw-bold">Send Message</h5>
-         <button class="btn-close" data-bs-dismiss="modal"></button>
-      </div>
+            <div class="modal-header">
+                <h5 class="modal-title fw-bold">Send Message</h5>
+                <button class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
 
-      <div class="modal-body">
-         <textarea id="modalMessage" class="form-control" rows="4"></textarea>
-         <input type="hidden" id="modalType">
-         <input type="hidden" id="modalTarget">
-      </div>
+            <div class="modal-body">
+                <textarea id="modalMessage" class="form-control" rows="4"></textarea>
+                <input type="hidden" id="modalType">
+                <input type="hidden" id="modalTarget">
+            </div>
 
-      <div class="modal-footer">
-         <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-         <button class="btn btn-primary" id="confirmSend">Send</button>
-      </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" id="confirmSend">Send</button>
+            </div>
 
+        </div>
     </div>
-  </div>
 </div>
-<!-- ========================================================= -->
 
-<!-- jQuery -->
+<!-- JS -->
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-
-<!-- Bootstrap JS -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
 <script>
-let sendModal = new bootstrap.Modal(document.getElementById('sendModal'));
+    let sendModal = new bootstrap.Modal(document.getElementById('sendModal'));
 
-// ================== Endpoint Mapping ==================
-const endpoints = {
-    sendWhatsApp: "{% url 'send_whatsapp' %}",
-    sendEmail: "{% url 'send_email' %}",
-    generateMessage: "/recommendations/api/generate-message/",
-    sendMessageAPI: "/recommendations/api/send-message/",
-    getAllProducts: "/recommendations/api/products/",
-    getAllCustomers: "/recommendations/api/customers/",
-    collaborative: id => `/recommendations/api/collaborative/${id}/`,
-    upsell: id => `/recommendations/api/upsell/${id}/`,
-    crosssell: id => `/recommendations/api/crosssell/${id}/`,
-    customerRecommendations: id => `/recommendations/api/customer_recommendations/${id}/`
-};
-// =====================================================
-
-// ---------- WHATSAPP ----------
-$(".send-whatsapp").click(function () {
-    let customer = $(this).data("customer");
-    let product = $(this).data("product");
-    let phone = $(this).data("phone");
-
-    $("#modalType").val("whatsapp");
-    $("#modalTarget").val(phone);
-    $("#modalMessage").val(`Hello ${customer}, we recommend ${product} for you.`);
-
-    sendModal.show();
-});
-
-// ---------- EMAIL ----------
-$(".send-email").click(function () {
-    let customer = $(this).data("customer");
-    let product = $(this).data("product");
-    let email = $(this).data("email");
-
-    $("#modalType").val("email");
-    $("#modalTarget").val(email);
-    $("#modalMessage").val(`Dear ${customer},\n\nWe recommend the following product for you:\n${product}\n\nThank you!`);
-
-    sendModal.show();
-});
-
-// ---------- SEND MESSAGE ----------
-$("#confirmSend").click(function () {
-    let type = $("#modalType").val();
-    let target = $("#modalTarget").val();
-    let message = $("#modalMessage").val();
-
-    let url = (type === "whatsapp") ? endpoints.sendWhatsApp : endpoints.sendEmail;
-
-    let payload = {
-        message: message,
-        csrfmiddlewaretoken: "{{ csrf_token }}"
+    const endpoints = {
+        sendWhatsApp: "{% url 'send_whatsapp' %}",
+        sendEmail: "{% url 'send_email' %}"
     };
 
-    if (type === "whatsapp") payload["phone"] = target;
-    if (type === "email") payload["email"] = target;
+    // WHATSAPP CLICK
+    $(".send-whatsapp").click(function () {
+        let customer = $(this).data("customer");
+        let product = $(this).data("product");
+        let phone = $(this).data("phone");
 
-    $.post(url, payload)
+        $("#modalType").val("whatsapp");
+        $("#modalTarget").val(phone);
+        $("#modalMessage").val(`Hello ${customer}, we recommend ${product} for you.`);
+
+        sendModal.show();
+    });
+
+    // EMAIL CLICK
+    $(".send-email").click(function () {
+        let customer = $(this).data("customer");
+        let product = $(this).data("product");
+        let email = $(this).data("email");
+
+        $("#modalType").val("email");
+        $("#modalTarget").val(email);
+        $("#modalMessage").val(`Dear ${customer},\n\nWe recommend the following product for you:\n${product}\n\nThank you!`);
+
+        sendModal.show();
+    });
+
+    // SEND MESSAGE
+    $("#confirmSend").click(function () {
+        let type = $("#modalType").val();
+        let target = $("#modalTarget").val();
+        let message = $("#modalMessage").val();
+
+        let url = (type === "whatsapp") ? endpoints.sendWhatsApp : endpoints.sendEmail;
+
+        let payload = {
+            message: message,
+            csrfmiddlewaretoken: "{{ csrf_token }}"
+        };
+
+        if (type === "whatsapp") payload["phone"] = target;
+        if (type === "email") payload["email"] = target;
+
+        $.post(url, payload)
         .done(function () {
             alert("Message sent successfully!");
             sendModal.hide();
@@ -267,7 +276,7 @@ $("#confirmSend").click(function () {
         .fail(function () {
             alert("Failed to send message. Please try again.");
         });
-});
+    });
 </script>
 
 </body>

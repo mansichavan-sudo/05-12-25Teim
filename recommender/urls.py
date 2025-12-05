@@ -2,7 +2,7 @@
 
 from django.urls import path
 from . import views
-from .views import api_ai_personalized,message_timeline_api
+from .views import api_ai_personalized,message_timeline_api,api_purchase_history
 
 urlpatterns = [
 
@@ -49,6 +49,9 @@ urlpatterns = [
 
     path('webhook/rapbooster/', views.rapbooster_webhook, name='rapbooster_webhook'),
     path("timeline/<int:customer_id>/", message_timeline_api, name="timeline_api"),
+
+    path("recommendations/api/purchase-history/<int:cid>/", api_purchase_history),
+
 
 
 ]
